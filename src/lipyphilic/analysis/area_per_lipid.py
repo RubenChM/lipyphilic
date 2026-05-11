@@ -114,6 +114,7 @@ The class and its methods
 
 """
 import freud.locality
+import MDAnalysis
 from MDAnalysis.analysis.base import AnalysisBase
 import numpy as np
 
@@ -129,9 +130,11 @@ class AreaPerLipid(AnalysisBase):
 
     def __init__(
         self,
-        universe,
-        lipid_sel,
-        leaflets,
+        universe: "MDAnalysis.Universe",
+        lipid_sel: str,
+        leaflets: np.ndarray,
+        neighbors_sel: str | None = None,
+        neighbor_cutoff: float = 0,
     ):
         """Set up parameters for calculating areas.
 
@@ -152,6 +155,12 @@ class AreaPerLipid(AnalysisBase):
             of shape (n_lipids, n_frames), the leaflet to which each lipid is
             assisgned at each frame will be taken into account when calculating
             the area per lipid.
+        neighbors_sel : str, optional
+            Atom selection for atoms to be considered as neighbors in the Voronoi tessellation.
+            This may be used to exclude protein or solvent atoms from the area calculation.
+        neighbor_cutoff : float, optional
+            Cutoff distance in Angstroms for including neighbor atoms in the Voronoi tessellation.
+            This is necessary to ensure that only neighbor atoms in the same leaflet as the lipids are included.
 
         Tip
         ---
@@ -163,6 +172,8 @@ class AreaPerLipid(AnalysisBase):
 
         self.u = universe
         self.membrane = self.u.select_atoms(lipid_sel, updating=False)
+        self.neighbors = self.u.select_atoms(neighbors_sel) if neighbors_sel else None
+        self.cutoff = neighbor_cutoff
 
         if not np.allclose(self.u.dimensions[3:], 90.0):
             _msg = "AreaPerLipid requires an orthorhombic box - triclinic systems are not supported."
@@ -216,6 +227,8 @@ class AreaPerLipid(AnalysisBase):
     def _single_frame(self):
         # Atoms must be wrapped before creating a lateral grid of the membrane
         self.membrane.wrap(inplace=True)
+        if self.neighbors:
+            self.neighbors.wrap(inplace=True)
         frame_leaflets = self.leaflets[:, self._frame_index] if self.leaflets.ndim == 2 else self.leaflets
 
         # Calculate area per lipid for the lower (-1) and upper (1) leaflets
@@ -224,6 +237,9 @@ class AreaPerLipid(AnalysisBase):
             # freud.order.Voronoi requires z positions set to 0
             leaflet = self.membrane.residues[frame_leaflets == leaflet_sign].atoms
             atoms = leaflet.atoms.intersection(self.membrane)
+            if self.neighbors:
+                filter_neighbors = self._filter_neighbors(atoms)
+                atoms = atoms.union(filter_neighbors)
             pos = atoms.positions
             pos[:, 2] = 0
 
@@ -241,7 +257,7 @@ class AreaPerLipid(AnalysisBase):
                 atom_areas=areas,
             )
 
-    def _remove_overlapping(self, positions):
+    def _remove_overlapping(self, positions: np.ndarray) -> None:
         """Ensure no two atoms are overlapping in the xy plane.
 
         Given an Nx3 array of atomic positions, make minor adjustments to xy positions
@@ -279,7 +295,7 @@ class AreaPerLipid(AnalysisBase):
                 positions[duplicate_index, 0] += 0.001
 
 
-    def _get_atom_areas(self, positions):
+    def _get_atom_areas(self, positions: np.ndarray) -> np.ndarray:
         """Calculate area per atom.
 
         Given xy coordinates of atomic positions, perform a Voronoi
@@ -311,7 +327,7 @@ class AreaPerLipid(AnalysisBase):
 
         return areas
 
-    def _get_area_per_lipid(self, atoms, atom_areas):
+    def _get_area_per_lipid(self, atoms: "MDAnalysis.AtomGroup", atom_areas: np.ndarray) -> None:
         """Calculate the area per lipid given the areas of every Voronoi cell in a tessellation.
 
         This involves summing contributions from each atom of a given lipid.
@@ -349,6 +365,16 @@ class AreaPerLipid(AnalysisBase):
 
             self.results.areas[species_resindices, self._frame_index] = species_apl
 
+    def _filter_neighbors(self, lipids: "MDAnalysis.AtomGroup") -> "MDAnalysis.AtomGroup":
+        """Filter neighbor atoms by distance from the lipids."""
+        if self.cutoff > 0:
+            filtered_neighbors = self.neighbors.select_atoms(
+                f"around {self.cutoff} global group leaflet",
+                leaflet=lipids,
+            )
+            return filtered_neighbors
+        return self.neighbors
+
 
     def project_area(
         self,
@@ -363,6 +389,7 @@ class AreaPerLipid(AnalysisBase):
         vmin=None,
         vmax=None,
         cbar=True,
+        interpolate_kws=None,
         cbar_kws=None,
         imshow_kws=None,
     ):
@@ -440,6 +467,9 @@ class AreaPerLipid(AnalysisBase):
             data.
         cbar : bool, optional
             Whether or not to add a colorbar to the plot.
+        interpolate_kws : dict, optional
+            A dictionary of keyword options to pass to `scipy.interpolate.griddata`, which is used
+            to interpolate the projected areas across periodic boundaries.
         cbar_kws : dict, optional
             A dictionary of keyword options to pass to matplotlib.pyplot.colorbar.
         imshow_kws : dict, optional
@@ -507,6 +537,15 @@ class AreaPerLipid(AnalysisBase):
             filter_by
         ]  # some molecules may be midplane during the period considered
 
+        # If neighbor atoms were provided, include their positions with zero value
+        # so that they appear as zero-area seeds in the projection.
+        if self.neighbors:
+            filter_neighbors = self._filter_neighbors(lipids)
+            n_x, n_y, _ = filter_neighbors.positions.T
+            # Append neighbor positions with zero values
+            lipids_xpos = np.concatenate((lipids_xpos, n_x))
+            lipids_ypos = np.concatenate((lipids_ypos, n_y))
+            values = np.concatenate((values, np.zeros(n_x.shape[0], dtype=float)))
         # And finally we can create our ProjectionPlot
         area_projection = ProjectionPlot(lipids_xpos, lipids_ypos, values)
 
@@ -522,7 +561,8 @@ class AreaPerLipid(AnalysisBase):
 
         area_projection.project_values(bins=bins)
 
-        area_projection.interpolate()
+        interpolate_kws = interpolate_kws or {}
+        area_projection.interpolate(**interpolate_kws)
         area_projection.plot_projection(
             ax=ax,
             cmap=cmap,

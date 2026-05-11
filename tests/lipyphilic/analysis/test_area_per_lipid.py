@@ -46,6 +46,54 @@ class TestAreaPerLipid:
         assert_array_almost_equal(areas.results.areas, 200.0, decimal=8)
 
 
+class TestAreaPerLipidNeighbors:
+    @staticmethod
+    def _universe():
+        universe = MDAnalysis.Universe.empty(
+            n_atoms=3,
+            n_residues=3,
+            atom_resindex=np.array([0, 1, 2]),
+            trajectory=True,
+        )
+        universe.add_TopologyAttr("names", ["L1", "L2", "P1"])
+        universe.add_TopologyAttr("resnames", ["LIP", "LIP", "PRO"])
+        universe.add_TopologyAttr("resids", [1, 2, 3])
+        universe.atoms.positions = np.array(
+            [
+                [2.0, 5.0, 5.0],
+                [8.0, 5.0, 5.0],
+                [5.0, 7.0, 5.0],
+            ]
+        )
+        universe.dimensions = np.array([10.0, 10.0, 10.0,
+                                        90.0, 90.0, 90.0])
+        return universe
+
+    def test_neighbors_influence_voronoi_cells(self):
+        leaflets = np.array([1, -1])
+
+        areas_without_neighbors = AreaPerLipid(
+            universe=self._universe(),
+            lipid_sel="resname LIP",
+            leaflets=leaflets,
+        )
+        areas_without_neighbors.run()
+
+        areas_with_neighbors = AreaPerLipid(
+            universe=self._universe(),
+            lipid_sel="resname LIP",
+            leaflets=leaflets,
+            neighbors_sel="resname PRO",
+        )
+        areas_with_neighbors.run()
+        apl_total = 10 * 10 * 2  # x * y * 2 leaflets
+        assert_array_almost_equal(areas_without_neighbors.results.areas.sum(), apl_total, decimal=8)
+        # Each leaflet area should be halved by the presence of the neighbor
+        assert areas_with_neighbors.results.areas.sum() < areas_without_neighbors.results.areas.sum()
+        apl_total_with_neighbors = apl_total / 2
+        assert_array_almost_equal(areas_with_neighbors.results.areas.sum(), apl_total_with_neighbors, decimal=8)
+
+
 class TestAreaPerLipidOverlapping:
     @staticmethod
     @pytest.fixture(scope="class")
