@@ -58,6 +58,8 @@ class TestAreaPerLipidNeighbors:
         universe.add_TopologyAttr("names", ["L1", "L2", "P1"])
         universe.add_TopologyAttr("resnames", ["LIP", "LIP", "PRO"])
         universe.add_TopologyAttr("resids", [1, 2, 3])
+        universe.add_TopologyAttr("masses", [1, 1, 2])
+        universe.add_TopologyAttr("bonds", [])
         universe.atoms.positions = np.array(
             [
                 [2.0, 5.0, 5.0],
@@ -72,12 +74,15 @@ class TestAreaPerLipidNeighbors:
     def test_neighbors_influence_voronoi_cells(self):
         leaflets = np.array([1, -1])
 
-        areas_without_neighbors = AreaPerLipid(
+        areas_no_neighbors = AreaPerLipid(
             universe=self._universe(),
             lipid_sel="resname LIP",
             leaflets=leaflets,
         )
-        areas_without_neighbors.run()
+        areas_no_neighbors.run()
+        areas_no_neighbors_sum = areas_no_neighbors.results.areas.sum()
+        apl_total = 10 * 10 * 2  # x * y * 2 leaflets
+        assert_array_almost_equal(areas_no_neighbors_sum, apl_total, decimal=8)
 
         areas_with_neighbors = AreaPerLipid(
             universe=self._universe(),
@@ -86,13 +91,42 @@ class TestAreaPerLipidNeighbors:
             neighbors_sel="resname PRO",
         )
         areas_with_neighbors.run()
-        apl_total = 10 * 10 * 2  # x * y * 2 leaflets
-        assert_array_almost_equal(areas_without_neighbors.results.areas.sum(), apl_total, decimal=8)
         # Each leaflet area should be halved by the presence of the neighbor
-        assert areas_with_neighbors.results.areas.sum() < areas_without_neighbors.results.areas.sum()
+        assert areas_with_neighbors.results.areas.sum() < areas_no_neighbors_sum
         apl_total_with_neighbors = apl_total / 2
         assert_array_almost_equal(areas_with_neighbors.results.areas.sum(), apl_total_with_neighbors, decimal=8)
 
+        # small cutoff excludes the PRO neighbor (distance ~3.605), so result equals no-neighbor case
+        areas_cutoff_small = AreaPerLipid(
+            universe=self._universe(),
+            lipid_sel="resname LIP",
+            leaflets=leaflets,
+            neighbors_sel="resname PRO",
+            neighbor_cutoff=3.0,
+        )
+        areas_cutoff_small.run()
+
+        assert_array_almost_equal(areas_cutoff_small.results.areas.sum(), areas_no_neighbors_sum, decimal=8)
+
+        # larger cutoff includes the neighbor; total area should same than with no cutoff
+        areas_cutoff_large = AreaPerLipid(
+            universe=self._universe(),
+            lipid_sel="resname LIP",
+            leaflets=leaflets,
+            neighbors_sel="resname PRO",
+            neighbor_cutoff=4.0,
+        )
+        areas_cutoff_large.run()
+
+        assert areas_cutoff_large.results.areas.sum() < areas_no_neighbors_sum
+        assert_array_almost_equal(areas_cutoff_large.results.areas.sum(), apl_total_with_neighbors, decimal=8)
+
+        area_projection = areas_cutoff_large.project_area()
+        assert isinstance(area_projection, ProjectionPlot)
+        # If we remove the zero values (which correspond to the neighbor's area),
+        # the result for the plotting is the same than for the apl
+        assert_array_almost_equal(area_projection.values[area_projection.values != 0],
+                                  areas_cutoff_large.results.areas.mean(), decimal=8)
 
 class TestAreaPerLipidOverlapping:
     @staticmethod
