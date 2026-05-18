@@ -46,7 +46,7 @@ class TestAreaPerLipid:
         assert_array_almost_equal(areas.results.areas, 200.0, decimal=8)
 
 
-class TestAreaPerLipidNeighbors:
+class TestAreaPerLipidExcluded:
     @staticmethod
     def _universe():
         universe = MDAnalysis.Universe.empty(
@@ -71,59 +71,59 @@ class TestAreaPerLipidNeighbors:
                                         90.0, 90.0, 90.0])
         return universe
 
-    def test_neighbors_influence_voronoi_cells(self):
+    def test_excluded_influence_voronoi_cells(self):
         leaflets = np.array([1, -1])
 
-        areas_no_neighbors = AreaPerLipid(
+        areas_no_excluded = AreaPerLipid(
             universe=self._universe(),
             lipid_sel="resname LIP",
             leaflets=leaflets,
         )
-        areas_no_neighbors.run()
-        areas_no_neighbors_sum = areas_no_neighbors.results.areas.sum()
+        areas_no_excluded.run()
+        areas_no_excluded_sum = areas_no_excluded.results.areas.sum()
         apl_total = 10 * 10 * 2  # x * y * 2 leaflets
-        assert_array_almost_equal(areas_no_neighbors_sum, apl_total, decimal=8)
+        assert_array_almost_equal(areas_no_excluded_sum, apl_total, decimal=8)
 
-        areas_with_neighbors = AreaPerLipid(
+        areas_with_excluded = AreaPerLipid(
             universe=self._universe(),
             lipid_sel="resname LIP",
             leaflets=leaflets,
-            neighbors_sel="resname PRO",
+            exclude_sel="resname PRO",
         )
-        areas_with_neighbors.run()
+        areas_with_excluded.run()
         # Each leaflet area should be halved by the presence of the neighbor
-        assert areas_with_neighbors.results.areas.sum() < areas_no_neighbors_sum
-        apl_total_with_neighbors = apl_total / 2
-        assert_array_almost_equal(areas_with_neighbors.results.areas.sum(), apl_total_with_neighbors, decimal=8)
+        assert areas_with_excluded.results.areas.sum() < areas_no_excluded_sum
+        apl_total_with_excluded = apl_total / 2
+        assert_array_almost_equal(areas_with_excluded.results.areas.sum(), apl_total_with_excluded, decimal=8)
 
         # small cutoff excludes the PRO neighbor (distance ~3.605), so result equals no-neighbor case
         areas_cutoff_small = AreaPerLipid(
             universe=self._universe(),
             lipid_sel="resname LIP",
             leaflets=leaflets,
-            neighbors_sel="resname PRO",
-            neighbor_cutoff=3.0,
+            exclude_sel="resname PRO",
+            exclude_cutoff=3.0,
         )
         areas_cutoff_small.run()
 
-        assert_array_almost_equal(areas_cutoff_small.results.areas.sum(), areas_no_neighbors_sum, decimal=8)
+        assert_array_almost_equal(areas_cutoff_small.results.areas.sum(), areas_no_excluded_sum, decimal=8)
 
         # larger cutoff includes the neighbor; total area should same than with no cutoff
         areas_cutoff_large = AreaPerLipid(
             universe=self._universe(),
             lipid_sel="resname LIP",
             leaflets=leaflets,
-            neighbors_sel="resname PRO",
-            neighbor_cutoff=4.0,
+            exclude_sel="resname PRO",
+            exclude_cutoff=4.0,
         )
         areas_cutoff_large.run()
 
-        assert areas_cutoff_large.results.areas.sum() < areas_no_neighbors_sum
-        assert_array_almost_equal(areas_cutoff_large.results.areas.sum(), apl_total_with_neighbors, decimal=8)
+        assert areas_cutoff_large.results.areas.sum() < areas_no_excluded_sum
+        assert_array_almost_equal(areas_cutoff_large.results.areas.sum(), apl_total_with_excluded, decimal=8)
 
         area_projection = areas_cutoff_large.project_area()
         assert isinstance(area_projection, ProjectionPlot)
-        # If we remove the zero values (which correspond to the neighbor's area),
+        # If we remove the zero values (which correspond to the exclude's area),
         # the result for the plotting is the same than for the apl
         assert_array_almost_equal(area_projection.values[area_projection.values != 0],
                                   areas_cutoff_large.results.areas.mean(), decimal=8)

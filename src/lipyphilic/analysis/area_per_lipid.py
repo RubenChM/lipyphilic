@@ -98,6 +98,29 @@ The results are then available in the :attr:`areas.areas` attribute as a
 to an individual frame, i.e `areas.areas[i, j]` contains the area of lipid *i*
 at frame *j*.
 
+Excluding protein and solvent
+------------------------------
+
+By default, the Voronoi tessellation only considers lipid atoms when calculating area per lipid.
+However, in systems containing proteins or solvent molecules, these can be included in the
+tessellation to account for the space they occupy, effectively reducing the area of the lipids.
+Use the `exclude_sel` and `exclude_cutoff` parameters to include and control the influence
+of non-lipid atoms::
+
+  # Include protein atoms within 10 Angstroms of lipids in the tessellation
+  areas = AreaPerLipid(
+    universe=u,
+    lipid_sel="name GL1 GL2 ROH",
+    leaflets=leaflets.leaflets,
+    exclude_sel="protein",
+    exclude_cutoff=10.0
+  )
+  areas.run()
+
+Setting `exclude_cutoff` ensures that only excluded atoms in close proximity to the leaflet
+are included, which prevents hovering atoms of the protein far from the membrane to
+artificially reduce the calculated area per lipid when they are projected onto the leaflet.
+
 Warning
 -------
 If your membrane is highly curved the calculated area per lipid will be inaccurate.
@@ -133,8 +156,8 @@ class AreaPerLipid(AnalysisBase):
         universe: "MDAnalysis.Universe",
         lipid_sel: str,
         leaflets: np.ndarray,
-        neighbors_sel: str | None = None,
-        neighbor_cutoff: float = 0,
+        exclude_sel: str  = "",
+        exclude_cutoff: float = 0,
     ):
         """Set up parameters for calculating areas.
 
@@ -155,12 +178,13 @@ class AreaPerLipid(AnalysisBase):
             of shape (n_lipids, n_frames), the leaflet to which each lipid is
             assisgned at each frame will be taken into account when calculating
             the area per lipid.
-        neighbors_sel : str, optional
-            Atom selection for atoms to be considered as neighbors in the Voronoi tessellation.
-            This may be used to exclude protein or solvent atoms from the area calculation.
-        neighbor_cutoff : float, optional
-            Cutoff distance in Angstroms for including neighbor atoms in the Voronoi tessellation.
-            This is necessary to ensure that only neighbor atoms in the same leaflet as the lipids are included.
+        exclude_sel : str, optional
+            Atom selection to be excluded from contributing to lipid area in the Voronoi tessellation.
+            This may be used to account for protein or solvent atoms that occupy space in the membrane.
+        exclude_cutoff : float, optional
+            Cutoff distance from the leaflet in Angstroms for the excluded atoms.
+            This is necessary to ensure that excluded atoms are in close proximity to the leaflet.
+            By default, all excluded atoms are used for both leaflets (no cutoff).
 
         Tip
         ---
@@ -172,8 +196,8 @@ class AreaPerLipid(AnalysisBase):
 
         self.u = universe
         self.membrane = self.u.select_atoms(lipid_sel, updating=False)
-        self.neighbors = self.u.select_atoms(neighbors_sel) if neighbors_sel else None
-        self.cutoff = neighbor_cutoff
+        self.excluded = self.u.select_atoms(exclude_sel)
+        self.exclude_cutoff = exclude_cutoff
 
         if not np.allclose(self.u.dimensions[3:], 90.0):
             _msg = "AreaPerLipid requires an orthorhombic box - triclinic systems are not supported."
@@ -227,8 +251,8 @@ class AreaPerLipid(AnalysisBase):
     def _single_frame(self):
         # Atoms must be wrapped before creating a lateral grid of the membrane
         self.membrane.wrap(inplace=True)
-        if self.neighbors:
-            self.neighbors.wrap(inplace=True)
+        if self.excluded:
+            self.excluded.wrap(inplace=True)
         frame_leaflets = self.leaflets[:, self._frame_index] if self.leaflets.ndim == 2 else self.leaflets
 
         # Calculate area per lipid for the lower (-1) and upper (1) leaflets
@@ -237,9 +261,9 @@ class AreaPerLipid(AnalysisBase):
             # freud.order.Voronoi requires z positions set to 0
             leaflet = self.membrane.residues[frame_leaflets == leaflet_sign].atoms
             atoms = leaflet.atoms.intersection(self.membrane)
-            if self.neighbors:
-                filter_neighbors = self._filter_neighbors(atoms)
-                atoms = atoms.union(filter_neighbors)
+            if self.excluded:
+                filter_excluded = self._filter_exclude(atoms)
+                atoms = atoms.union(filter_excluded)
             pos = atoms.positions
             pos[:, 2] = 0
 
@@ -365,15 +389,15 @@ class AreaPerLipid(AnalysisBase):
 
             self.results.areas[species_resindices, self._frame_index] = species_apl
 
-    def _filter_neighbors(self, lipids: "MDAnalysis.AtomGroup") -> "MDAnalysis.AtomGroup":
-        """Filter neighbor atoms by distance from the lipids."""
-        if self.cutoff > 0:
-            filtered_neighbors = self.neighbors.select_atoms(
-                f"around {self.cutoff} global group leaflet",
+    def _filter_exclude(self, lipids: "MDAnalysis.AtomGroup") -> "MDAnalysis.AtomGroup":
+        """Filter excluded atoms by distance from the lipids."""
+        if self.exclude_cutoff > 0:
+            filtered_exclude = self.excluded.select_atoms(
+                f"around {self.exclude_cutoff} global group leaflet",
                 leaflet=lipids,
             )
-            return filtered_neighbors
-        return self.neighbors
+            return filtered_exclude
+        return self.excluded
 
 
     def project_area(
@@ -537,12 +561,12 @@ class AreaPerLipid(AnalysisBase):
             filter_by
         ]  # some molecules may be midplane during the period considered
 
-        # If neighbor atoms were provided, include their positions with zero value
+        # If excluded atoms were provided, include their positions with zero value
         # so that they appear as zero-area seeds in the projection.
-        if self.neighbors:
-            filter_neighbors = self._filter_neighbors(lipids)
-            n_x, n_y, _ = filter_neighbors.positions.T
-            # Append neighbor positions with zero values
+        if self.excluded:
+            filter_excluded = self._filter_exclude(lipids)
+            n_x, n_y, _ = filter_excluded.positions.T
+            # Append excluded positions with zero values
             lipids_xpos = np.concatenate((lipids_xpos, n_x))
             lipids_ypos = np.concatenate((lipids_ypos, n_y))
             values = np.concatenate((values, np.zeros(n_x.shape[0], dtype=float)))
